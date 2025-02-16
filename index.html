@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disaster Risk Checker</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #f4f4f4;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+        #result {
+            margin-top: 20px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .safe {
+            color: green;
+        }
+        .high-risk {
+            color: red;
+        }
+        #map {
+            height: 400px;
+            margin-top: 20px;
+            border-radius: 10px;
+        }
+        input {
+            padding: 10px;
+            width: 80%;
+            margin-top: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        .evacuation-zones {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f39c12;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .zone-item {
+            margin-bottom: 10px;
+        }
+        .zone-item b {
+            font-size: 18px;
+        }
+        .zone-item p {
+            font-size: 16px;
+            color: #34495e;
+        }
+        .earthquake-tips {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f1c40f;
+            border-radius: 5px;
+            text-align: left;
+        }
+        .earthquake-tips h3 {
+            font-size: 20px;
+            font-weight: bold;
+        }
+        .earthquake-tips ul {
+            list-style-type: square;
+            margin-top: 10px;
+            padding-left: 20px;
+        }
+        .earthquake-tips ul li {
+            font-size: 16px;
+            color: #34495e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Earthquake Risk Checker</h2>
+        <button onclick="getLocation()">Check My Location</button>
+        <input type="text" id="cityInput" placeholder="Enter city name" oninput="fetchCitySuggestions()">
+        <div id="suggestions" class="autocomplete-suggestions"></div>
+        <button onclick="checkCityRisk()">Check City</button>
+        <p id="result">Waiting for location...</p>
+        <div id="map"></div>
+        <div id="evacuation" class="evacuation-zones"></div>
+        <div id="earthquakeTips" class="earthquake-tips"></div>
+        <div id="relocation" class="relocation-options"></div>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        let map;
+        let marker;
+        let safeMarkers = [];
+        let relocationMarkers = [];
+
+        const evacuationZones = [
+            {name: "Zone A", lat: 19.0760, lon: 72.8777, services: "Food, Shelter, Aid"},
+            {name: "Zone B", lat: 28.7041, lon: 77.1025, services: "Shelter, Aid"},
+            {name: "Zone C", lat: 13.0827, lon: 80.2707, services: "Food, Shelter"}
+        ];
+
+        const earthquakeTips = [
+            "Drop to your hands and knees to protect yourself from falling objects.",
+            "Take cover under sturdy furniture, away from windows and doors.",
+            "Hold on to your shelter and wait for the shaking to stop.",
+            "Stay away from glass, mirrors, and heavy objects.",
+            "If outside, move to an open area away from buildings and trees."
+        ];
+
+        function speak(text) {
+            const speech = new SpeechSynthesisUtterance(text);
+            window.speechSynthesis.speak(speech);
+        }
+
+        function getLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    checkRisk(lat, lon);
+                    showMap(lat, lon);
+                }, () => {
+                    alert("Unable to retrieve location");
+                });
+            } else {
+                alert("Geolocation is not supported by this browser.");
+            }
+        }
+
+        async function checkRisk(latitude, longitude) {
+            try {
+                const response = await fetch("http://127.0.0.1:5000/check_location", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ latitude, longitude })
+                });
+                
+                const data = await response.json();
+                const resultElement = document.getElementById("result");
+                
+                resultElement.innerText = `Risk Level: ${data.riskLevel}`;
+                speak(`Risk Level: ${data.riskLevel}`);
+                
+                if (data.riskLevel.includes("High")) {
+                    resultElement.className = "high-risk";
+                    alert("🚨 High Earthquake Risk Detected! Proceed to the nearest safe zone.");
+                    speak("High Earthquake Risk Detected. Proceed to the nearest safe zone.");
+                    showEvacuationZones();
+                    showEarthquakeTips();
+                    showRelocationOptions(data.relocationZones);
+                } else {
+                    resultElement.className = "safe";
+                    alert("✅ You are in a Safe Zone.");
+                    speak("You are in a safe zone.");
+                    document.getElementById("evacuation").innerHTML = '';
+                    document.getElementById("earthquakeTips").innerHTML = '';
+                    document.getElementById("relocation").innerHTML = '';
+                }
+                
+                showMap(data.latitude, data.longitude);
+            } catch (error) {
+                console.error("Error fetching data:", error);
+            }
+        }
+
+        function showMap(lat, lon) {
+            if (!map) {
+                map = L.map('map').setView([lat, lon], 13);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '© OpenStreetMap contributors'
+                }).addTo(map);
+            }
+            if (marker) {
+                marker.setLatLng([lat, lon]);
+            } else {
+                marker = L.marker([lat, lon], { draggable: true }).addTo(map);
+                marker.on('dragend', function (event) {
+                    const newLat = event.target.getLatLng().lat;
+                    const newLon = event.target.getLatLng().lng;
+                    checkRisk(newLat, newLon);  // Recheck risk after moving marker
+                });
+            }
+        }
+
+        function showEvacuationZones() {
+            const evacuationElement = document.getElementById("evacuation");
+            evacuationElement.innerHTML = '<b>Evacuation Zones:</b><br>';
+            
+            evacuationZones.forEach(zone => {
+                evacuationElement.innerHTML += `<div class="zone-item"><b>${zone.name}</b><br>Services: ${zone.services}</div>`;
+            });
+            speak("Here are the nearest evacuation zones.");
+            evacuationZones.forEach(zone => {
+                speak(`${zone.name}: Services available: ${zone.services}`);
+            });
+        }
+
+        function showEarthquakeTips() {
+            const tipsElement = document.getElementById("earthquakeTips");
+            tipsElement.innerHTML = '<h3>Earthquake Safety Tips:</h3><ul>';
+            
+            earthquakeTips.forEach(tip => {
+                tipsElement.innerHTML += `<li>${tip}</li>`;
+            });
+            tipsElement.innerHTML += '</ul>';
+            
+            // Speak the safety tips out loud
+            speak("Here are some earthquake safety tips:");
+            earthquakeTips.forEach(tip => {
+                speak(tip);
+            });
+        }
+
+        function showRelocationOptions(relocationZones) {
+            const relocationElement = document.getElementById("relocation");
+            relocationElement.innerHTML = '<b>Relocation Options:</b><br>';
+            
+            relocationZones.forEach(zone => {
+                relocationElement.innerHTML += `<div class="zone-item"><b>${zone.name}</b><br>Distance: ${zone.distance} km<br>Services: ${zone.services}</div>`;
+            });
+            
+            relocationZones.forEach(zone => {
+                const relocationMarker = L.marker([zone.lat, zone.lon]).addTo(map)
+                    .bindPopup(`Relocation Zone: ${zone.name} - Distance: ${zone.distance} km`)
+                    .on('click', () => {
+                        alert(`Proceed to: ${zone.name} - Services: ${zone.services}`);
+                        speak(`Proceed to: ${zone.name}. Services: ${zone.services}`);
+                    });
+                relocationMarkers.push(relocationMarker);
+            });
+        }
+
+        async function checkCityRisk() {
+            const city = document.getElementById("cityInput").value;
+            if (!city) {
+                alert("Please enter a city name");
+                return;
+            }
+
+            try {
+                const response = await fetch("http://127.0.0.1:5000/check_city", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ city })
+                });
+                
+                const data = await response.json();
+                const resultElement = document.getElementById("result");
+                
+                resultElement.innerText = `Risk Level: ${data.riskLevel}`;
+                speak(`Risk Level: ${data.riskLevel}`);
+                
+                if (data.riskLevel.includes("High")) {
+                    resultElement.className = "high-risk";
+                    alert("🚨 High Earthquake Risk Detected! Proceed to the nearest safe zone.");
+                    speak("High Earthquake Risk Detected. Proceed to the nearest safe zone.");
+                    showEvacuationZones();
+                    showEarthquakeTips();
+                    showRelocationOptions(data.relocationZones);
+                } else {
+                    resultElement.className = "safe";
+                    alert("✅ You are in a Safe Zone.");
+                    speak("You are in a safe zone.");
+                    document.getElementById("evacuation").innerHTML = '';
+                    document.getElementById("earthquakeTips").innerHTML = '';
+                    document.getElementById("relocation").innerHTML = '';
+                }
+                
+                showMap(data.latitude, data.longitude);
+            } catch (error) {
+                console.error("Error fetching data:", error);
+            }
+        }
+    </script>
+</body>
+</html>
